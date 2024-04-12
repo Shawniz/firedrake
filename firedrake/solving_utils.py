@@ -35,7 +35,8 @@ else:
                               "ksp_type": "preonly",
                               "ksp_rtol": 1e-7,
                               "pc_type": "lu",
-                              "pc_factor_mat_solver_type": "superlu_dist"}
+                              "pc_factor_mat_solver_type": "mumps",
+                              "mat_mumps_icntl_14": 200}
 
 
 def set_defaults(solver_parameters, arguments, *, ksp_defaults={}, snes_defaults={}):
