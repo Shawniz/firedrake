@@ -570,16 +570,22 @@ if platform.system() == "Linux" and mode == "install":
     # Check if it is a tigerlake processor ie: "i3-11", "i5-11", "i7-11"
     if any(bad_cpu in cpuinfostring for bad_cpu in ["i3-11", "i5-11", "i7-11"]):
         # Get the compiler names and versions
-        cc = sniff_compiler(args.mpicc or "gcc")
-        cxx = sniff_compiler(args.mpicxx or "g++")
-        fortran = sniff_compiler(args.mpif90 or "gfortran")
-        # Check if the combination is a problem
-        if any(map(lambda compiler: compiler[0] == "GNU" and compiler[1] < Version("9.4"), [cc, cxx, fortran])):
-            print(
-                "\nUsing a Tiger Lake (or newer) CPU with gcc, g++ and gfortran version<=9.3 is not possible."
-                " Please install at least gcc, g++ and gfortran version 9.4.0 or later"
+        try:
+            cc = sniff_compiler(args.mpicc or "gcc")
+            cxx = sniff_compiler(args.mpicxx or "g++")
+            fortran = sniff_compiler(args.mpif90 or "gfortran")
+            # Check if the combination is a problem
+            if any(map(lambda compiler: compiler[0] == "GNU" and compiler[1] < Version("9.4"), [cc, cxx, fortran])):
+                log.info(
+                    "\nUsing a Tiger Lake (or newer) CPU with gcc, g++ and gfortran version<=9.3 is not possible."
+                    " Please install at least gcc, g++ and gfortran version 9.4.0 or later"
+                )
+                sys.exit(1)
+        except (subprocess.CalledProcessError, FileNotFoundError):
+            log.info(
+                "\nFailed to sniff compiler version, perhaps there is no compiler installed.\n"
+                "You can ignore this if you are not using a Tiger Lake (or newer) CPU with gcc, g++ or gfortran version<=9.3\n"
             )
-            sys.exit(1)
 
 
 @atexit.register
@@ -736,6 +742,8 @@ def get_petsc_options(minimal=False):
         petsc_options.add("--download-cmake")
 
     if (not options["minimal_petsc"]) and (not minimal):
+        # Another sparse direct solver
+        petsc_options.add("--download-superlu_dist")
         petsc_options.add("--with-zlib")
         # File formats
         petsc_options.add("--download-netcdf")
@@ -758,6 +766,9 @@ def get_petsc_options(minimal=False):
 
     if options["complex"]:
         petsc_options.add('--with-scalar-type=complex')
+    else:
+        # AMG
+        petsc_options.add("--download-hypre")
 
     if options.get("mpiexec") is not None:
         petsc_options.add("--with-mpiexec={}".format(options["mpiexec"]))
@@ -1719,6 +1730,7 @@ if mode == "install":
 # numpy requires setuptools==59.2.0 and wheel==0.37.0 until it moves to meson build
 run_pip(["install", "-U", "setuptools==59.2.0"])
 run_pip(["install", "-U", "hatch"])
+run_pip(["install", "-U", "editables"])
 run_pip(["install", "-U", "pip"])
 run_pip(["install", "-U", "wheel==0.37.0"])
 
