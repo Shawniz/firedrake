@@ -89,7 +89,7 @@ class FacetSplitPC(PCBase):
             self.mixed_opmat = PETSc.Mat()
             global_indices = V.dof_dset.lgmap.apply(self.subset.indices)
             self._global_iperm = PETSc.IS().createGeneral(global_indices, comm=pc.comm)
-            self._permute_op = partial(self.mixed_opmat.createSubMatrixVirtual, P, self._global_iperm, self._global_iperm)
+            self._permute_op = partial(self.mixed_opmat.createSubMatrixVirtual, P, self._global_iperm)
             self.reset_operators = True
         else:
             self.mixed_opmat = P
@@ -148,6 +148,7 @@ class FacetSplitPC(PCBase):
         self._permute_op()
         if self.reset_operators:
             self.pc.setOperators(A=self.mixed_opmat, P=self.mixed_opmat)
+            self.pc.setFromOptions()
 
     def prolong(self, x, y):
         if x is not y:
