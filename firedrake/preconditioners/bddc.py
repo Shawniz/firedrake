@@ -145,13 +145,8 @@ class BDDCPC(PCBase):
 
 
 def get_vertex_dofs(V):
-    dofs = V.finat_element.entity_dofs()
-    vdofs = sum(len(dofs[dim][v]) for dim in dofs for v in dofs[dim] if sum(as_tuple(dim)) == 0)
-    if vdofs == V.finat_element.space_dimension():
-        indices = numpy.arange(V.dof_dset.layout_vec.getSizes()[0], dtype=PETSc.IntType)
-    else:
-        W = FunctionSpace(V.mesh(), restrict(V.ufl_element(), "vertex"))
-        indices = get_restriction_indices(V, W)
+    W = FunctionSpace(V.mesh(), restrict(V.ufl_element(), "vertex"))
+    indices = get_restriction_indices(V, W)
     indices = V.dof_dset.lgmap.apply(indices)
     vertex_dofs = PETSc.IS().createGeneral(indices, comm=V.comm)
     return vertex_dofs
