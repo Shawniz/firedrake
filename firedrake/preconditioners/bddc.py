@@ -6,6 +6,9 @@ from firedrake.dmhooks import get_function_space, get_appctx
 from firedrake.ufl_expr import TestFunction, TrialFunction
 from firedrake.function import Function
 from firedrake.functionspace import FunctionSpace, VectorFunctionSpace, TensorFunctionSpace
+from firedrake.preconditioners.fdm import tabulate_exterior_derivative
+from firedrake.preconditioners.hiptmair import curl_to_grad
+from firedrake import assemble
 from ufl import curl, div, H1, H2, HCurl, HDiv, inner, dx
 from pyop2.utils import as_tuple
 import numpy
@@ -24,12 +27,13 @@ class BDDCPC(PCBase):
     - ``'bddc_pc_bddc_dirichlet'`` to set sub-KSPs on subdomain interiors,
     - ``'bddc_pc_bddc_coarse'`` to set the coarse solver KSP.
 
-    This PC also inspects optional arguments supplied in the application context:
-    - ``'discrete_gradient'`` for 3D problems in H(curl), this sets the arguments
-    (a Mat tabulating the gradient of the auxiliary H1 space) and
+    This PC also inspects optional callbacks supplied in the application context:
+    - ``'get_discrete_gradient'`` for 3D problems in H(curl), this is a callable that
+    provide the arguments (a Mat tabulating the gradient of the auxiliary H1 space) and
     keyword arguments supplied to ``PETSc.PC.setBDDCDiscreteGradient``.
-    - ``'divergence_mat'`` for problems in H(div) (resp. 2D H(curl)), this sets the Mat with the
-    assembled bilinear form testing the divergence (curl) against an L2 space.
+    - ``'get_divergence_mat'`` for problems in H(div) (resp. 2D H(curl)), this is
+    provide the arguments (a Mat with the assembled bilinear form testing the divergence
+    (curl) against an L2 space) and keyword arguments supplied to ``PETSc.PC.setDivergenceMat``.
     """
 
     _prefix = "bddc_"
@@ -91,41 +95,22 @@ class BDDCPC(PCBase):
 
         tdim = V.mesh().topological_dimension()
         if tdim >= 2 and V.finat_element.formdegree == tdim-1:
-            # Should we use a callable like for hypre_ams?
-            B = appctx.get("divergence_mat", None)
-            if B is None:
-                from firedrake.assemble import assemble
-                d = {HCurl: curl, HDiv: div}[sobolev_space]
-                if V.shape == ():
-                    make_function_space = FunctionSpace
-                elif len(V.shape) == 1:
-                    make_function_space = VectorFunctionSpace
-                else:
-                    make_function_space = TensorFunctionSpace
-                Q = make_function_space(V.mesh(), "DG", degree-1)
-                b = inner(d(TrialFunction(V)), TestFunction(Q)) * dx(degree=2*(degree-1))
-                B = assemble(b, mat_type="is")
-            bddcpc.setBDDCDivergenceMat(B.petscmat)
+            get_divergence = appctx.get("get_divergence_mat", get_divergence_mat)
+            divergence = get_divergence(V)
+            try:
+                div_args, div_kwargs = divergence
+            except ValueError:
+                div_args = (divergence,)
+                div_kwargs = dict()
+            bddcpc.setBDDCDivergenceMat(*div_args, **div_kwargs)
         elif sobolev_space == HCurl:
-            # Should we use a callable like for hypre_ams?
-            gradient = appctx.get("discrete_gradient", None)
-            if gradient is None:
-                from firedrake.preconditioners.fdm import tabulate_exterior_derivative
-                from firedrake.preconditioners.hiptmair import curl_to_grad
-                Q = FunctionSpace(V.mesh(), curl_to_grad(V.ufl_element()))
-                gradient = tabulate_exterior_derivative(Q, V)
-                if variant == 'fdm':
-                    corners = get_vertex_dofs(Q)
-                    gradient.compose('_elements_corners', corners)
+            get_gradient = appctx.get("get_discrete_gradient", get_discrete_gradient)
+            gradient = get_gradient(V)
+            try:
+                grad_args, grad_kwargs = gradient
+            except ValueError:
                 grad_args = (gradient,)
-                grad_kwargs = {'order': degree}
-            else:
-                try:
-                    grad_args, grad_kwargs = gradient
-                except ValueError:
-                    grad_args = (gradient,)
-                    grad_kwargs = dict()
-
+                grad_kwargs = dict()
             bddcpc.setBDDCDiscreteGradient(*grad_args, **grad_kwargs)
 
         bddcpc.setFromOptions()
@@ -150,3 +135,32 @@ def get_vertex_dofs(V):
     indices = V.dof_dset.lgmap.apply(indices)
     vertex_dofs = PETSc.IS().createGeneral(indices, comm=V.comm)
     return vertex_dofs
+
+
+def get_divergence_mat(V):
+    sobolev_space = V.ufl_element().sobolev_space
+    degree = max(as_tuple(V.ufl_element().degree()))
+    d = {HCurl: curl, HDiv: div}[sobolev_space]
+    if V.shape == ():
+        make_function_space = FunctionSpace
+    elif len(V.shape) == 1:
+        make_function_space = VectorFunctionSpace
+    else:
+        make_function_space = TensorFunctionSpace
+    Q = make_function_space(V.mesh(), "DG", degree-1)
+    b = inner(d(TrialFunction(V)), TestFunction(Q)) * dx(degree=2*(degree-1))
+    B = assemble.assemble(b, mat_type="is")
+    return (B.petscmat,), dict()
+
+
+def get_discrete_gradient(V):
+    degree = max(as_tuple(V.ufl_element().degree()))
+    variant = V.ufl_element().variant()
+    Q = FunctionSpace(V.mesh(), curl_to_grad(V.ufl_element()))
+    gradient = tabulate_exterior_derivative(Q, V)
+    if variant == 'fdm':
+        corners = get_vertex_dofs(Q)
+        gradient.compose('_elements_corners', corners)
+    grad_args = (gradient,)
+    grad_kwargs = {'order': degree}
+    return grad_args, grad_kwargs
