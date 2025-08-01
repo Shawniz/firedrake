@@ -8,8 +8,7 @@ from firedrake.function import Function
 from firedrake.functionspace import FunctionSpace, VectorFunctionSpace, TensorFunctionSpace
 from firedrake.preconditioners.fdm import tabulate_exterior_derivative
 from firedrake.preconditioners.hiptmair import curl_to_grad
-from firedrake import assemble
-from ufl import curl, div, H1, H2, HCurl, HDiv, inner, dx
+from ufl import curl, div, H1, H2, HCurl, HDiv, inner, dx, JacobianDeterminant
 from pyop2.utils import as_tuple
 import numpy
 
@@ -96,7 +95,12 @@ class BDDCPC(PCBase):
         tdim = V.mesh().topological_dimension()
         if tdim >= 2 and V.finat_element.formdegree == tdim-1:
             get_divergence = appctx.get("get_divergence_mat", get_divergence_mat)
-            divergence = get_divergence(V)
+            qdegree = degree - 1
+            if variant in ("fdm", "integral"):
+                qdegree = 0
+            A, P = pc.getOperators()
+            allow_repeated = P.getISAllowRepeated()
+            divergence = get_divergence(V, degree=qdegree, mat_type="is", allow_repeated=allow_repeated)
             try:
                 div_args, div_kwargs = divergence
             except ValueError:
@@ -137,9 +141,9 @@ def get_vertex_dofs(V):
     return vertex_dofs
 
 
-def get_divergence_mat(V):
+def get_divergence_mat(V, degree=None, mat_type="aij", allow_repeated=False):
     sobolev_space = V.ufl_element().sobolev_space
-    degree = max(as_tuple(V.ufl_element().degree()))
+    vdegree = max(as_tuple(V.ufl_element().degree()))
     d = {HCurl: curl, HDiv: div}[sobolev_space]
     if V.shape == ():
         make_function_space = FunctionSpace
@@ -147,10 +151,25 @@ def get_divergence_mat(V):
         make_function_space = VectorFunctionSpace
     else:
         make_function_space = TensorFunctionSpace
-    Q = make_function_space(V.mesh(), "DG", degree-1)
-    b = inner(d(TrialFunction(V)), TestFunction(Q)) * dx(degree=2*(degree-1))
-    B = assemble.assemble(b, mat_type="is")
-    return (B.petscmat,), dict()
+
+    if degree is None:
+        degree = vdegree-1
+    Q = make_function_space(V.mesh(), "DG", degree)
+    if False:
+        from firedrake import assemble
+        b = inner(d(TrialFunction(V)), TestFunction(Q)) * dx(degree=degree+vdegree-1)
+        B = assemble(b, mat_type=mat_type).petscmat
+    else:
+        B = tabulate_exterior_derivative(V, Q, mat_type=mat_type, allow_repeated=allow_repeated)
+        # Fix sign
+        tdim = V.mesh().topological_dimension()
+        alpha = (-1) ** (tdim-1)
+        Jdet = JacobianDeterminant(V.mesh())
+        s = Function(Q).interpolate(alpha * abs(Jdet) / Jdet)
+        with s.dat.vec as svec:
+            B.diagonalScale(svec, None)
+
+    return (B,), dict()
 
 
 def get_discrete_gradient(V):
